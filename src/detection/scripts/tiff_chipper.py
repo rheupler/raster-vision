@@ -3,6 +3,7 @@ import argparse
 from os import makedirs
 from os.path import join, splitext, basename
 import csv
+import glob
 
 import numpy as np
 import matplotlib as mpl
@@ -58,7 +59,7 @@ def print_box_stats(boxes):
           np.mean(height), np.min(height), np.max(height)))
 
 
-def make_debug_plot(output_debug_dir, boxes, box_ind, im):
+def make_debug_plot(output_debug_dir, boxes, chip_fn, im):
     # draw rectangle representing box
     debug_im = np.copy(im)
 
@@ -69,16 +70,18 @@ def make_debug_plot(output_debug_dir, boxes, box_ind, im):
         debug_im[ymin, xmin:xmax+1, :] = 0
         debug_im[ymax, xmin:xmax+1, :] = 0
 
-    debug_path = join(
-        output_debug_dir, '{}.jpg'.format(box_ind))
+    debug_path = join(output_debug_dir, chip_fn)
     imsave(debug_path, debug_im)
 
 
-def write_chips_csv(csv_path, chip_rows):
-    with open(csv_path, 'w') as csv_file:
+def write_chips_csv(csv_path, chip_rows, append_csv=False):
+    mode = 'a' if append_csv else 'w'
+    with open(csv_path, mode) as csv_file:
         csv_writer = csv.writer(csv_file)
-        csv_writer.writerow(
-            ('filename', 'xmin', 'xmax', 'ymin', 'ymax', 'class_id'))
+        # Only write header if not appending.
+        if not append_csv:
+            csv_writer.writerow(
+                ('filename', 'xmin', 'xmax', 'ymin', 'ymax', 'class_id'))
         for row in chip_rows:
             csv_writer.writerow(row)
 
@@ -113,8 +116,8 @@ def get_random_window(box, im_width, im_height, chip_size):
     return (rand_x, rand_y)
 
 
-def make_chips(image_path, json_path, output_dir, debug=False,
-               chip_size=300):
+def make_chips_for_image(image_path, image_id, json_path, output_dir,
+                         append_csv=False, debug=False, chip_size=300):
     '''Make training chips from a GeoTIFF and GeoJSON with detections.'''
     makedirs(output_dir, exist_ok=True)
     output_image_dir = join(output_dir, 'images')
@@ -140,7 +143,7 @@ def make_chips(image_path, json_path, output_dir, debug=False,
             continue
 
         # extract random window around anchor_box.
-        chip_file_name = '{}.jpg'.format(chip_ind)
+        chip_fn = '{}_{}.jpg'.format(image_id, chip_ind)
         rand_x, rand_y = get_random_window(
             anchor_box, image_dataset.width, image_dataset.height, chip_size)
         window = ((rand_y, rand_y + chip_size), (rand_x, rand_x + chip_size))
@@ -170,7 +173,7 @@ def make_chips(image_path, json_path, output_dir, debug=False,
             is_contained = (np.all(chip_box >= 0) and
                             np.all(chip_box < chip_size))
             if is_contained:
-                row = [chip_file_name, chip_xmin, chip_xmax,
+                row = [chip_fn, chip_xmin, chip_xmax,
                        chip_ymin, chip_ymax, chip_class_id]
                 chip_rows.append(row)
                 chip_boxes.append(chip_box)
@@ -184,16 +187,33 @@ def make_chips(image_path, json_path, output_dir, debug=False,
                 redacted_chip_im[clip_ymin:clip_ymax, clip_xmin:clip_xmax, :] = 0   # noqa
 
         # save the chip.
-        chip_path = join(output_image_dir, chip_file_name)
+        chip_path = join(output_image_dir, chip_fn)
 
         imsave(chip_path, redacted_chip_im)
         if debug:
-            make_debug_plot(output_debug_dir, chip_boxes, chip_ind,
+            make_debug_plot(output_debug_dir, chip_boxes, chip_fn,
                             chip_im)
 
     # save csv.
     chip_csv_path = join(output_dir, 'annotations.csv')
-    write_chips_csv(chip_csv_path, chip_rows)
+    write_chips_csv(chip_csv_path, chip_rows, append_csv)
+
+
+def make_chips(input_dir, output_dir, debug=False, chip_size=300):
+    image_paths = glob.glob(join(input_dir, '*.tif'))
+    append_csv = False
+    for image_path in image_paths:
+        image_fn = basename(image_path)
+        image_id = splitext(image_fn)[0]
+        json_fn = image_id + '.geojson'
+        json_path = join(input_dir, json_fn)
+
+        print('Making chips for {}...'.format(image_fn))
+        make_chips_for_image(image_path, image_id, json_path, output_dir,
+                             append_csv=append_csv, debug=debug,
+                             chip_size=chip_size)
+        print()
+        append_csv = True
 
 
 def parse_args():
@@ -202,8 +222,7 @@ def parse_args():
         file containing labels in the form of polygon bounding boxes.
     """
     parser = argparse.ArgumentParser(description=description)
-    parser.add_argument('--tiff-path')
-    parser.add_argument('--json-path')
+    parser.add_argument('--input-dir')
     parser.add_argument('--output-dir')
     parser.add_argument('--debug', dest='debug', action='store_true')
     parser.add_argument('--chip-size', type=int, default=300)
@@ -214,5 +233,5 @@ if __name__ == '__main__':
     args = parse_args()
     print(args)
 
-    make_chips(args.tiff_path, args.json_path, args.output_dir, args.debug,
+    make_chips(args.input_dir, args.output_dir, args.debug,
                args.chip_size)
